@@ -22,19 +22,26 @@ class SupermemoryClient {
   /**
    * Add a new memory
    */
-  async addMemory(content, containerTag, metadata = {}) {
-    const result = await this.client.add({
+  async addMemory(content, containerTag, metadata = {}, customId = null) {
+    const payload = {
       content,
       containerTag: containerTag || this.containerTag,
       metadata: {
         sm_source: 'claude-code-plugin',
         ...metadata
       }
-    });
+    };
+
+    if (customId) {
+      payload.customId = customId;
+    }
+
+    const result = await this.client.add(payload);
     return {
       id: result.id,
-      status: 'queued',
-      containerTag: containerTag || this.containerTag
+      status: result.status,
+      containerTag: containerTag || this.containerTag,
+      sessionId: customId
     };
   }
 

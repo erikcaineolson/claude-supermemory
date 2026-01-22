@@ -41,17 +41,15 @@ async function main() {
     const projectName = getProjectName(cwd);
 
     // Save session end marker
-    // In a more advanced implementation, we could read the transcript
-    // and generate a proper summary
     await client.addMemory(
-      `Session ended in ${projectName}`,
+      `[SESSION_END] Session completed in ${projectName}`,
       containerTag,
       {
         type: 'session_end',
-        sessionId,
         project: projectName,
         timestamp: new Date().toISOString()
-      }
+      },
+      sessionId 
     );
 
     debugLog(settings, 'Session end saved');

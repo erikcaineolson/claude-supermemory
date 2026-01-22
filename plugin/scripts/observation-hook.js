@@ -69,13 +69,17 @@ async function main() {
     const metadata = {
       ...getObservationMetadata(toolName, cleanInput),
       type: 'observation',
-      sessionId,
       project: projectName,
       timestamp: new Date().toISOString()
     };
 
     // Save observation to Supermemory
-    await client.addMemory(compressed, containerTag, metadata);
+    await client.addMemory(
+      `[${toolName.toUpperCase()}] ${compressed}`,
+      containerTag,
+      metadata,
+      sessionId 
+    );
 
     debugLog(settings, 'Observation saved', { compressed });
     outputSuccess();

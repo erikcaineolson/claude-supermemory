@@ -60,14 +60,14 @@ async function main() {
 
     // Save prompt to Supermemory
     await client.addMemory(
-      `User request in ${projectName}: ${cleanPrompt}`,
+      `[USER] ${cleanPrompt}`,
       containerTag,
       {
         type: 'user_prompt',
-        sessionId,
         project: projectName,
         timestamp: new Date().toISOString()
-      }
+      },
+      sessionId  // customId - accumulates all session content into one document
     );
 
     debugLog(settings, 'Prompt saved');
