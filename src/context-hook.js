@@ -1,16 +1,3 @@
-#!/usr/bin/env node
-/**
- * SessionStart Hook - Context Injection
- *
- * Fetches relevant memories from Supermemory and injects them into Claude's context.
- *
- * Input (stdin):
- *   { session_id, cwd, hook_event_name, source }
- *
- * Output (stdout):
- *   { hookSpecificOutput: { hookEventName, additionalContext } }
- */
-
 const { SupermemoryClient } = require('./lib/supermemory-client');
 const { getContainerTag, getProjectName } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
@@ -27,12 +14,10 @@ async function main() {
 
     debugLog(settings, 'SessionStart', { cwd, containerTag, projectName });
 
-    // Get API key
     let apiKey;
     try {
       apiKey = getApiKey(settings);
-    } catch (err) {
-      // No API key - return minimal context
+    } catch {
       writeOutput({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
@@ -46,74 +31,49 @@ Get your key at: https://console.supermemory.ai
     }
 
     const client = new SupermemoryClient(apiKey);
-
-    // Fetch profile and memories in parallel
     const [profileResult, memoriesResult] = await Promise.allSettled([
       client.getProfile(containerTag, projectName),
       client.listMemories(containerTag, settings.maxProjectMemories)
     ]);
 
-    // Build context
-    const parts = [];
-    parts.push(`<supermemory-context project="${projectName}">`);
+    const parts = [`<supermemory-context project="${projectName}">`];
 
-    // Add profile if available
     if (profileResult.status === 'fulfilled' && profileResult.value?.profile) {
       const profile = profileResult.value.profile;
-
-      if (profile.static && profile.static.length > 0) {
+      if (profile.static?.length > 0) {
         parts.push('\n## User Preferences');
-        profile.static.slice(0, settings.maxProfileItems).forEach(fact => {
-          parts.push(`- ${fact}`);
-        });
+        profile.static.slice(0, settings.maxProfileItems).forEach(fact => parts.push(`- ${fact}`));
       }
-
-      if (profile.dynamic && profile.dynamic.length > 0) {
+      if (profile.dynamic?.length > 0) {
         parts.push('\n## Recent Context');
-        profile.dynamic.slice(0, settings.maxProfileItems).forEach(fact => {
-          parts.push(`- ${fact}`);
-        });
+        profile.dynamic.slice(0, settings.maxProfileItems).forEach(fact => parts.push(`- ${fact}`));
       }
     }
 
-    // Add project memories if available
     if (memoriesResult.status === 'fulfilled' && memoriesResult.value?.memories) {
       const memories = memoriesResult.value.memories;
-
       if (memories.length > 0) {
         parts.push('\n## Project Knowledge');
         memories.slice(0, settings.maxContextMemories).forEach(mem => {
           const summary = mem.summary || mem.content || '';
-          if (summary) {
-            parts.push(`- ${summary.slice(0, 200)}`);
-          }
+          if (summary) parts.push(`- ${summary.slice(0, 200)}`);
         });
       }
     }
 
-    // If no memories found, add helpful message
     if (parts.length === 1) {
       parts.push('\nNo previous memories found for this project.');
       parts.push('Memories will be saved as you work.');
     }
 
     parts.push('\n</supermemory-context>');
-
     const additionalContext = parts.join('\n');
-
     debugLog(settings, 'Context generated', { length: additionalContext.length });
-
-    writeOutput({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext
-      }
-    });
+    writeOutput({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } });
 
   } catch (err) {
     debugLog(settings, 'Error', { error: err.message });
     console.error(`Supermemory: ${err.message}`);
-    // Non-blocking error - continue session without context
     writeOutput({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',

@@ -10,16 +10,7 @@
     "type": "git",
     "url": "https://github.com/supermemoryai/claude-supermemory"
   },
-  "keywords": [
-    "claude-code",
-    "plugin",
-    "supermemory",
-    "memory",
-    "ai"
-  ],
+  "keywords": ["claude-code", "plugin", "supermemory", "memory", "ai"],
   "author": "Supermemory",
-  "license": "MIT",
-  "dependencies": {
-    "supermemory": "^4.0.0"
-  }
+  "license": "MIT"
 }

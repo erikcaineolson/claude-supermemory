@@ -1,16 +1,3 @@
-#!/usr/bin/env node
-/**
- * PostToolUse Hook - Capture Tool Observations
- *
- * Captures tool usage and saves compressed observations to Supermemory.
- *
- * Input (stdin):
- *   { session_id, tool_name, tool_input, tool_response, cwd, hook_event_name }
- *
- * Output (stdout):
- *   { continue: true, suppressOutput: true }
- */
-
 const { SupermemoryClient } = require('./lib/supermemory-client');
 const { getContainerTag, getProjectName } = require('./lib/container-tag');
 const { stripPrivateFromJson } = require('./lib/privacy');
@@ -31,28 +18,22 @@ async function main() {
 
     debugLog(settings, 'PostToolUse', { sessionId, toolName });
 
-    // Check if we should capture this tool
     if (!shouldCaptureTool(toolName, settings)) {
       debugLog(settings, 'Skipping tool', { toolName });
       outputSuccess();
       return;
     }
 
-    // Get API key
     let apiKey;
     try {
       apiKey = getApiKey(settings);
     } catch {
-      // No API key - silently continue
       outputSuccess();
       return;
     }
 
-    // Strip privacy tags from input/response
     const cleanInput = stripPrivateFromJson(toolInput);
     const cleanResponse = stripPrivateFromJson(toolResponse);
-
-    // Compress the observation
     const compressed = compressObservation(toolName, cleanInput, cleanResponse);
 
     if (!compressed) {
@@ -65,7 +46,6 @@ async function main() {
     const containerTag = getContainerTag(cwd);
     const projectName = getProjectName(cwd);
 
-    // Get metadata for this observation
     const metadata = {
       ...getObservationMetadata(toolName, cleanInput),
       type: 'observation',
@@ -73,20 +53,13 @@ async function main() {
       timestamp: new Date().toISOString()
     };
 
-    // Save observation to Supermemory
-    await client.addMemory(
-      `[${toolName.toUpperCase()}] ${compressed}`,
-      containerTag,
-      metadata,
-      sessionId 
-    );
+    await client.addMemory(`[${toolName.toUpperCase()}] ${compressed}`, containerTag, metadata, sessionId);
 
     debugLog(settings, 'Observation saved', { compressed });
     outputSuccess();
 
   } catch (err) {
     debugLog(settings, 'Error', { error: err.message });
-    // Non-blocking - continue session
     outputError(err.message);
   }
 }
