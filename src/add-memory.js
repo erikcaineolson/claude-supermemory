@@ -1,14 +1,31 @@
 const { SupermemoryClient } = require('./lib/supermemory-client');
-const { getContainerTag, getProjectName } = require('./lib/container-tag');
+const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
 const { loadSettings, getApiKey } = require('./lib/settings');
+const { sanitizeContent, auditLog, MAX_CONTENT_LENGTH } = require('./lib/security');
 
 async function main() {
-  const content = process.argv.slice(2).join(' ');
+  const rawContent = process.argv.slice(2).join(' ');
 
-  if (!content || !content.trim()) {
+  if (!rawContent || !rawContent.trim()) {
     console.log(
       'No content provided. Usage: node add-memory.cjs "content to save"',
     );
+    return;
+  }
+
+  // Sanitize and validate content
+  const sanitized = sanitizeContent(rawContent);
+  if (sanitized.redacted) {
+    console.log('Warning: Some sensitive data was redacted from your content.');
+    auditLog('manual_add_redacted', { originalLength: rawContent.length });
+  }
+  if (sanitized.truncated) {
+    console.log(`Warning: Content was truncated to ${MAX_CONTENT_LENGTH} characters.`);
+  }
+
+  const content = sanitized.content;
+  if (!content.trim()) {
+    console.log('Content is empty after sanitization.');
     return;
   }
 
@@ -24,6 +41,13 @@ async function main() {
   }
 
   const cwd = process.cwd();
+
+  // Validate cwd
+  if (!validateCwd(cwd)) {
+    console.log('Error: Invalid working directory.');
+    return;
+  }
+
   const containerTag = getContainerTag(cwd);
   const projectName = getProjectName(cwd);
 

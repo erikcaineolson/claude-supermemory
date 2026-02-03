@@ -4,9 +4,44 @@ const {
   validateApiKeyFormat,
   validateContainerTag,
 } = require('./validate.js');
+const {
+  getSecureApiUrl,
+  sanitizeContent,
+  sanitizeQuery,
+  sanitizeMetadata,
+  auditLog,
+} = require('./security.js');
 
 const DEFAULT_PROJECT_ID = 'claudecode_default';
-const API_URL = process.env.SUPERMEMORY_API_URL || 'https://api.supermemory.ai';
+// Use secure API URL validation - rejects untrusted hosts
+const API_URL = getSecureApiUrl();
+
+// Rate limiter configuration
+const RATE_LIMIT_MAX_CALLS = 100;
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+
+/**
+ * Simple rate limiter to prevent API abuse.
+ */
+class RateLimiter {
+  constructor(maxCalls = RATE_LIMIT_MAX_CALLS, windowMs = RATE_LIMIT_WINDOW_MS) {
+    this.maxCalls = maxCalls;
+    this.windowMs = windowMs;
+    this.calls = [];
+  }
+
+  check() {
+    const now = Date.now();
+    // Remove calls outside the window
+    this.calls = this.calls.filter((t) => now - t < this.windowMs);
+    if (this.calls.length >= this.maxCalls) {
+      throw new Error(
+        `Rate limit exceeded: ${this.maxCalls} calls per ${this.windowMs / 1000}s`,
+      );
+    }
+    this.calls.push(now);
+  }
+}
 
 class SupermemoryClient {
   constructor(apiKey, containerTag) {
@@ -31,15 +66,34 @@ class SupermemoryClient {
       defaultHeaders: integrityHeaders,
     });
     this.containerTag = tag;
+    this.rateLimiter = new RateLimiter();
   }
 
   async addMemory(content, containerTag, metadata = {}, customId = null) {
+    this.rateLimiter.check();
+
+    // Sanitize content - redact secrets and enforce size limits
+    const sanitized = sanitizeContent(content);
+    if (sanitized.redacted) {
+      auditLog('content_redacted', { reason: 'sensitive data detected' });
+    }
+    if (sanitized.truncated) {
+      auditLog('content_truncated', { originalLength: content.length });
+    }
+
+    // Sanitize metadata
+    const safeMetadata = sanitizeMetadata({
+      sm_source: 'claude-code-plugin',
+      ...metadata,
+    });
+
     const payload = {
-      content,
+      content: sanitized.content,
       containerTag: containerTag || this.containerTag,
-      metadata: { sm_source: 'claude-code-plugin', ...metadata },
+      metadata: safeMetadata,
     };
     if (customId) payload.customId = customId;
+
     const result = await this.client.add(payload);
     return {
       id: result.id,
@@ -49,10 +103,18 @@ class SupermemoryClient {
   }
 
   async search(query, containerTag, options = {}) {
+    this.rateLimiter.check();
+
+    // Sanitize query
+    const safeQuery = sanitizeQuery(query);
+    if (!safeQuery) {
+      return { results: [], total: 0, timing: 0 };
+    }
+
     const result = await this.client.search.memories({
-      q: query,
+      q: safeQuery,
       containerTag: containerTag || this.containerTag,
-      limit: options.limit || 10,
+      limit: Math.min(options.limit || 10, 50), // Cap at 50 results
       searchMode: options.searchMode || 'hybrid',
     });
     return {
@@ -69,9 +131,14 @@ class SupermemoryClient {
   }
 
   async getProfile(containerTag, query) {
+    this.rateLimiter.check();
+
+    // Sanitize query if provided
+    const safeQuery = query ? sanitizeQuery(query) : undefined;
+
     const result = await this.client.profile({
       containerTag: containerTag || this.containerTag,
-      q: query,
+      q: safeQuery,
     });
     return {
       profile: {
@@ -94,6 +161,7 @@ class SupermemoryClient {
   }
 
   async listMemories(containerTag, limit = 20) {
+    this.rateLimiter.check();
     const result = await this.client.memories.list({
       containerTags: containerTag || this.containerTag,
       limit,
@@ -104,8 +172,9 @@ class SupermemoryClient {
   }
 
   async deleteMemory(memoryId) {
+    this.rateLimiter.check();
     return this.client.memories.delete(memoryId);
   }
 }
 
-module.exports = { SupermemoryClient };
+module.exports = { SupermemoryClient, RateLimiter };

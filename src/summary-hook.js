@@ -3,6 +3,7 @@ const { getContainerTag, getProjectName } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
 const { formatNewEntries } = require('./lib/transcript-formatter');
+const { validateTranscriptPath, auditLog } = require('./lib/security');
 
 async function main() {
   const settings = loadSettings();
@@ -17,6 +18,18 @@ async function main() {
 
     if (!transcriptPath || !sessionId) {
       debugLog(settings, 'Missing transcript path or session id');
+      writeOutput({ continue: true });
+      return;
+    }
+
+    // Validate transcript path is in expected location
+    const pathValidation = validateTranscriptPath(transcriptPath);
+    if (!pathValidation.valid) {
+      auditLog('transcript_path_rejected', {
+        path: transcriptPath,
+        reason: pathValidation.reason,
+      });
+      debugLog(settings, `Invalid transcript path: ${pathValidation.reason}`);
       writeOutput({ continue: true });
       return;
     }

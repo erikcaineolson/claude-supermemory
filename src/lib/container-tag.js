@@ -1,19 +1,59 @@
-const { execSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 function sha256(input) {
   return crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
-function getGitRoot(cwd) {
+/**
+ * Validate that cwd is a safe directory path.
+ * Prevents command injection via malicious directory paths.
+ */
+function validateCwd(cwd) {
+  if (!cwd || typeof cwd !== 'string') {
+    return false;
+  }
+  // Must be an absolute path
+  if (!path.isAbsolute(cwd)) {
+    return false;
+  }
+  // Must exist and be a directory
   try {
-    const gitRoot = execSync('git rev-parse --show-toplevel', {
+    const stats = fs.statSync(cwd);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Cache git roots to avoid repeated executions
+const gitRootCache = new Map();
+
+function getGitRoot(cwd) {
+  // Validate cwd before using it in shell command
+  if (!validateCwd(cwd)) {
+    return null;
+  }
+
+  // Return cached result if available
+  if (gitRootCache.has(cwd)) {
+    return gitRootCache.get(cwd);
+  }
+
+  try {
+    // Use execFileSync instead of execSync to avoid shell interpretation
+    const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-    return gitRoot || null;
+    const result = gitRoot || null;
+    gitRootCache.set(cwd, result);
+    return result;
   } catch {
+    gitRootCache.set(cwd, null);
     return null;
   }
 }
@@ -32,7 +72,8 @@ function getProjectName(cwd) {
 
 function getUserContainerTag() {
   try {
-    const email = execSync('git config user.email', {
+    // Use execFileSync to avoid shell interpretation
+    const email = execFileSync('git', ['config', 'user.email'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
@@ -48,4 +89,5 @@ module.exports = {
   getContainerTag,
   getProjectName,
   getUserContainerTag,
+  validateCwd,
 };

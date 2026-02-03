@@ -1,16 +1,33 @@
 const { SupermemoryClient } = require('./lib/supermemory-client');
-const { getContainerTag, getProjectName } = require('./lib/container-tag');
+const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
 const { startAuthFlow } = require('./lib/auth');
 const { formatContext } = require('./lib/format-context');
+const { auditLog } = require('./lib/security');
 
 async function main() {
   const settings = loadSettings();
 
   try {
     const input = await readStdin();
-    const cwd = input.cwd || process.cwd();
+    const rawCwd = input.cwd || process.cwd();
+
+    // Validate cwd before using it
+    if (!validateCwd(rawCwd)) {
+      auditLog('cwd_validation_failed', { cwd: rawCwd });
+      writeOutput({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: `<supermemory-status>
+Invalid working directory. Session will continue without memory context.
+</supermemory-status>`,
+        },
+      });
+      return;
+    }
+
+    const cwd = rawCwd;
     const containerTag = getContainerTag(cwd);
     const projectName = getProjectName(cwd);
 
