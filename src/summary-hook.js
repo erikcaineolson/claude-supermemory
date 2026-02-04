@@ -1,4 +1,4 @@
-const { SupermemoryClient } = require('./lib/supermemory-client');
+const { createClient, isLocalBackend } = require('./lib/client-factory');
 const { getContainerTag, getProjectName } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
@@ -34,12 +34,14 @@ async function main() {
       return;
     }
 
-    let apiKey;
-    try {
-      apiKey = getApiKey(settings);
-    } catch {
-      writeOutput({ continue: true });
-      return;
+    // For cloud backend, verify API key exists
+    if (!isLocalBackend()) {
+      try {
+        getApiKey(settings);
+      } catch {
+        writeOutput({ continue: true });
+        return;
+      }
     }
 
     const formatted = formatNewEntries(transcriptPath, sessionId);
@@ -50,9 +52,9 @@ async function main() {
       return;
     }
 
-    const client = new SupermemoryClient(apiKey);
     const containerTag = getContainerTag(cwd);
     const projectName = getProjectName(cwd);
+    const client = createClient(containerTag);
 
     await client.addMemory(
       formatted,

@@ -1,4 +1,4 @@
-const { SupermemoryClient } = require('./lib/supermemory-client');
+const { createClient, isLocalBackend } = require('./lib/client-factory');
 const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
@@ -33,31 +33,34 @@ Invalid working directory. Session will continue without memory context.
 
     debugLog(settings, 'SessionStart', { cwd, containerTag, projectName });
 
-    let apiKey;
-    try {
-      apiKey = getApiKey(settings);
-    } catch {
+    // For local backend, skip auth flow
+    if (!isLocalBackend()) {
+      let apiKey;
       try {
-        debugLog(settings, 'No API key found, starting browser auth flow');
-        apiKey = await startAuthFlow();
-        debugLog(settings, 'Auth flow completed successfully');
-      } catch (authErr) {
-        const isTimeout = authErr.message === 'AUTH_TIMEOUT';
-        writeOutput({
-          hookSpecificOutput: {
-            hookEventName: 'SessionStart',
-            additionalContext: `<supermemory-status>
+        apiKey = getApiKey(settings);
+      } catch {
+        try {
+          debugLog(settings, 'No API key found, starting browser auth flow');
+          apiKey = await startAuthFlow();
+          debugLog(settings, 'Auth flow completed successfully');
+        } catch (authErr) {
+          const isTimeout = authErr.message === 'AUTH_TIMEOUT';
+          writeOutput({
+            hookSpecificOutput: {
+              hookEventName: 'SessionStart',
+              additionalContext: `<supermemory-status>
 ${isTimeout ? 'Authentication timed out. Please complete login in the browser window.' : 'Authentication failed.'}
 If the browser did not open, visit: https://console.supermemory.ai/auth/connect
 Or set SUPERMEMORY_CC_API_KEY environment variable manually.
 </supermemory-status>`,
-          },
-        });
-        return;
+            },
+          });
+          return;
+        }
       }
     }
 
-    const client = new SupermemoryClient(apiKey);
+    const client = createClient(containerTag);
     const profileResult = await client
       .getProfile(containerTag, projectName)
       .catch(() => null);

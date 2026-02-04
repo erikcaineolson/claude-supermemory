@@ -19,7 +19,8 @@ const ALLOWED_API_HOSTS = [
   'api.supermemory.ai',
   'console.supermemory.ai',
   'mcp.supermemory.ai',
-  'localhost', // For local development only
+  'localhost', // For local backend
+  '127.0.0.1', // For local backend (IP form)
 ];
 
 /**
