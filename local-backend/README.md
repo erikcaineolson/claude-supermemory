@@ -4,108 +4,192 @@ A self-hosted, privacy-focused replacement for the Supermemory API.
 
 **All data stays on your machine. Nothing is sent to external servers.**
 
-## Architecture
+## Features
 
-- **ChromaDB** (Docker) - Vector database for semantic search
-- **Node.js server** - API compatibility layer
+- **Zero dependencies** - Just Node.js, no Docker required
+- **JSON storage** - Simple, portable data format
+- **TF-IDF search** - Built-in keyword search
+- **Authentication** - Bearer token required for all API calls
+- **Secure by default** - Localhost only, restrictive file permissions
 
 ## Quick Start
 
 ```bash
-# 1. Start ChromaDB
-npm run docker:up
-
-# 2. Start the API server
+# Start the server
 npm start
 
-# 3. Configure the plugin
+# The auth token is displayed on first run
+# It's also saved to ~/.supermemory-local/auth.token
+```
+
+Output:
+```
+Supermemory Local Backend
+=========================
+Data directory: /Users/you/.supermemory-local
+Database: /Users/you/.supermemory-local/memories.json
+Auth token file: /Users/you/.supermemory-local/auth.token
+Auth token: abc123...
+
+Loaded 0 memories
+
+Server running at http://127.0.0.1:19877
+```
+
+## Configuration
+
+Configure the plugin to use the local backend:
+
+```bash
 export SUPERMEMORY_API_URL=http://127.0.0.1:19877
 export SUPERMEMORY_CC_API_KEY=local_ignored
 ```
 
-## Docker Commands
-
-```bash
-# Start ChromaDB
-npm run docker:up
-
-# Stop ChromaDB
-npm run docker:down
-
-# View logs
-npm run docker:logs
-```
+The client automatically loads the auth token from `~/.supermemory-local/auth.token`.
 
 ## Data Storage
 
-- **ChromaDB data**: Docker volume `supermemory-local_chroma_data`
-- **Location**: Managed by Docker, persists across restarts
+All data is stored in `~/.supermemory-local/`:
 
-To backup your data:
+| File | Description | Permissions |
+|------|-------------|-------------|
+| `memories.json` | All memories and metadata | 0600 |
+| `auth.token` | Authentication token | 0600 |
+
+### Backup
+
 ```bash
-docker run --rm -v supermemory-local_chroma_data:/data -v $(pwd):/backup alpine tar czf /backup/chroma-backup.tar.gz /data
+cp ~/.supermemory-local/memories.json ~/backup/
 ```
 
-To restore:
+### Restore
+
 ```bash
-docker run --rm -v supermemory-local_chroma_data:/data -v $(pwd):/backup alpine tar xzf /backup/chroma-backup.tar.gz -C /
+cp ~/backup/memories.json ~/.supermemory-local/
+```
+
+### Reset
+
+```bash
+rm ~/.supermemory-local/memories.json
+# Restart the server
 ```
 
 ## API Endpoints
 
+All endpoints except `/health` require authentication:
+```
+Authorization: Bearer <token>
+```
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/add` | POST | Add a memory |
-| `/profile` | POST | Get user profile with facts |
-| `/search/memories` | POST | Search memories |
+| `/profile` | POST | Get user profile with extracted facts |
+| `/search/memories` | POST | Search memories (TF-IDF) |
 | `/memories/list` | POST | List memories |
-| `/memories/:id` | DELETE | Delete a memory |
-| `/health` | GET | Health check |
+| `/memories/:id` | DELETE | Soft-delete a memory |
+| `/health` | GET | Health check (no auth required) |
+
+### Example: Add Memory
+
+```bash
+curl -X POST http://127.0.0.1:19877/add \
+  -H "Authorization: Bearer $(cat ~/.supermemory-local/auth.token)" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "User prefers TypeScript", "containerTag": "my-project"}'
+```
+
+### Example: Search
+
+```bash
+curl -X POST http://127.0.0.1:19877/search/memories \
+  -H "Authorization: Bearer $(cat ~/.supermemory-local/auth.token)" \
+  -H "Content-Type: application/json" \
+  -d '{"q": "TypeScript", "containerTag": "my-project"}'
+```
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUPERMEMORY_LOCAL_PORT` | `19877` | API server port |
-| `CHROMA_URL` | `http://127.0.0.1:8000` | ChromaDB URL |
 
 ## Security
 
-- Server binds to `127.0.0.1` only (localhost)
-- ChromaDB telemetry is disabled
-- No authentication required (local only)
-- Data persisted in Docker volumes with standard permissions
+### Authentication
+
+- 32-byte random token generated on first run
+- Token stored in `~/.supermemory-local/auth.token` with 0600 permissions
+- All API calls (except `/health`) require `Authorization: Bearer <token>`
+- Timing-safe token comparison prevents timing attacks
+
+### CORS
+
+- Only `localhost` and `127.0.0.1` origins allowed
+- Requests from other origins are rejected with 403
+
+### Network
+
+- Server binds to `127.0.0.1` only (not accessible from network)
+- Request body size limited to 10MB
+
+### Data
+
+- All files created with 0600 permissions (owner read/write only)
+- Data directory created with 0700 permissions
+- Soft deletes preserve data integrity
+
+## Search Algorithm
+
+The backend uses TF-IDF-like keyword matching:
+
+1. Query and documents are tokenized (lowercase, remove punctuation, min 3 chars)
+2. Score = (matching tokens) / (query tokens)
+3. Results sorted by score, normalized to 0-1 similarity
+
+For semantic/vector search, use the Supermemory cloud service.
 
 ## Comparison to Supermemory Cloud
 
 | Feature | Local | Cloud |
 |---------|-------|-------|
-| Data privacy | ✅ 100% local | ❌ Stored on their servers |
-| Semantic search | ✅ ChromaDB | ✅ Proprietary |
-| Cost | ✅ Free | 💰 Pro subscription |
-| Setup | Docker required | None |
-| Profile generation | Basic extraction | AI-powered |
+| Data privacy | 100% local | Stored on their servers |
+| Search | TF-IDF keyword | Semantic/vector |
+| Cost | Free | Pro subscription |
+| Setup | `npm start` | None |
+| Profile generation | Pattern extraction | AI-powered |
+| Authentication | Bearer token | API key |
 
 ## Troubleshooting
 
-### ChromaDB won't start
-```bash
-# Check if port 8000 is in use
-lsof -i :8000
+### "Unauthorized" error
 
-# Check Docker logs
-docker logs supermemory-chromadb
+Make sure you're including the auth token:
+```bash
+curl -H "Authorization: Bearer $(cat ~/.supermemory-local/auth.token)" ...
 ```
 
-### Connection refused
-Make sure ChromaDB is running:
+### Port already in use
+
 ```bash
-curl http://127.0.0.1:8000/api/v1/heartbeat
+# Check what's using port 19877
+lsof -i :19877
+
+# Use a different port
+SUPERMEMORY_LOCAL_PORT=19878 npm start
 ```
 
-### Reset all data
+### Permission denied
+
 ```bash
-npm run docker:down
-docker volume rm supermemory-local_chroma_data
-npm run docker:up
+# Fix permissions
+chmod 700 ~/.supermemory-local
+chmod 600 ~/.supermemory-local/*
+```
+
+### View stored data
+
+```bash
+cat ~/.supermemory-local/memories.json | jq
 ```

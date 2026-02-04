@@ -7,8 +7,8 @@ Your agent remembers what you worked on - across sessions, across projects.
 
 | Option | Privacy | Setup | Cost |
 |--------|---------|-------|------|
-| **Local Backend** | ✅ 100% local, no data leaves your machine | Docker + Node.js | Free |
-| **Supermemory Cloud** | ❌ Data stored on their servers | None | Pro subscription |
+| **Local Backend** | 100% local, no data leaves your machine | Just Node.js | Free |
+| **Supermemory Cloud** | Data stored on their servers | None | Pro subscription |
 
 ## Features
 
@@ -20,32 +20,34 @@ Your agent remembers what you worked on - across sessions, across projects.
 
 ## Installation: Local Backend (Recommended)
 
-All data stays on your machine. No external API calls.
+All data stays on your machine. No external API calls. No Docker required.
 
 ### Prerequisites
 
-- Docker Desktop running
 - Node.js 18+
 
 ### Step 1: Start the Local Backend
 
 ```bash
 cd local-backend
-
-# Start ChromaDB vector database
-docker compose up -d
-
-# Start the API server (keep this terminal open)
 npm start
 ```
 
 You should see:
 ```
-Supermemory Local Backend (Docker + ChromaDB)
-==============================================
-ChromaDB connection: OK
+Supermemory Local Backend
+=========================
+Data directory: ~/.supermemory-local
+Database: ~/.supermemory-local/memories.json
+Auth token file: ~/.supermemory-local/auth.token
+Auth token: <your-token>
+
+Loaded 0 memories
+
 Server running at http://127.0.0.1:19877
 ```
+
+**Important**: The auth token is displayed on first run. The client automatically loads it from `~/.supermemory-local/auth.token`.
 
 ### Step 2: Configure Environment
 
@@ -66,6 +68,11 @@ source ~/.zshrc  # or source ~/.bashrc
 In Claude Code, run:
 
 ```
+/install-github erikcaineolson/claude-supermemory
+```
+
+Or manually:
+```
 /plugin marketplace add /path/to/claude-supermemory
 /plugin install claude-supermemory
 ```
@@ -80,8 +87,7 @@ Before starting Claude Code, ensure the backend is running:
 
 ```bash
 cd /path/to/claude-supermemory/local-backend
-docker compose up -d   # Start ChromaDB if not running
-npm start              # Start API server
+npm start
 ```
 
 ---
@@ -100,8 +106,7 @@ Get your API key at [console.supermemory.ai](https://console.supermemory.ai).
 Then install the plugin:
 
 ```
-/plugin marketplace add /path/to/claude-supermemory
-/plugin install claude-supermemory
+/install-github erikcaineolson/claude-supermemory
 ```
 
 ## How It Works
@@ -155,12 +160,16 @@ Log out from Supermemory and clear saved credentials.
 ### Environment Variables
 
 ```bash
-# Required
+# Required for cloud, ignored for local
 SUPERMEMORY_CC_API_KEY=sm_...
+
+# Required for local backend
+SUPERMEMORY_API_URL=http://127.0.0.1:19877
 
 # Optional
 SUPERMEMORY_SKIP_TOOLS=Read,Glob,Grep    # Tools to not capture
 SUPERMEMORY_DEBUG=true                    # Enable debug logging
+SUPERMEMORY_AUDIT_LOG=true               # Enable security audit logging
 ```
 
 ### Settings File
@@ -175,6 +184,17 @@ Create `~/.supermemory-claude/settings.json`:
   "debug": false
 }
 ```
+
+## Security
+
+The local backend includes several security features:
+
+- **Authentication**: Bearer token required for all API calls (except health check)
+- **Token storage**: Auth token saved with 0600 permissions (owner read/write only)
+- **CORS**: Only localhost origins allowed
+- **Data isolation**: All data stored in `~/.supermemory-local/` with restricted permissions
+- **Input validation**: Content size limits, sensitive data redaction
+- **Timing-safe auth**: Token comparison resistant to timing attacks
 
 ## License
 

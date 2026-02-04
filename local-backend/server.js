@@ -2,10 +2,11 @@
 /**
  * Supermemory-compatible local backend server
  *
- * A self-hosted replacement for the Supermemory API.
- * Connects to a Dockerized ChromaDB for vector storage.
+ * A self-hosted replacement for the Supermemory API that stores all data locally.
+ * No Docker required - uses JSON file storage with TF-IDF search.
  *
- * No data is sent to any external servers.
+ * Storage: ~/.supermemory-local/memories.json
+ * Auth: Bearer token stored in ~/.supermemory-local/auth.token
  */
 
 import http from 'node:http';
@@ -20,41 +21,12 @@ import crypto from 'node:crypto';
 // ============================================================================
 
 const PORT = process.env.SUPERMEMORY_LOCAL_PORT || 19877;
-const CHROMA_URL = process.env.CHROMA_URL || 'http://127.0.0.1:8000';
 const DATA_DIR = path.join(os.homedir(), '.supermemory-local');
+const DB_FILE = path.join(DATA_DIR, 'memories.json');
 const AUTH_TOKEN_FILE = path.join(DATA_DIR, 'auth.token');
 
-// Allowed CORS origins - localhost only for security
-const ALLOWED_ORIGINS = [
-  'http://localhost',
-  'http://127.0.0.1',
-];
-
-/**
- * Check if origin is allowed for CORS
- * Allows localhost/127.0.0.1 on any port
- */
-function isAllowedOrigin(origin) {
-  if (!origin) return true; // Allow requests with no origin (same-origin, curl, etc.)
-  try {
-    const url = new URL(origin);
-    return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Get CORS origin header value
- * Returns the origin if allowed, null otherwise
- */
-function getCorsOrigin(origin) {
-  if (!origin) return null;
-  return isAllowedOrigin(origin) ? origin : null;
-}
-
 // ============================================================================
-// DATA DIRECTORY SETUP
+// DATA DIRECTORY & AUTH
 // ============================================================================
 
 function ensureDataDir() {
@@ -62,10 +34,6 @@ function ensureDataDir() {
     fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   }
 }
-
-// ============================================================================
-// AUTHENTICATION
-// ============================================================================
 
 let authToken = null;
 
@@ -104,8 +72,7 @@ function loadOrCreateAuthToken() {
 
 /**
  * Validate authorization header
- * @param {http.IncomingMessage} req
- * @returns {boolean}
+ * Uses timing-safe comparison to prevent timing attacks
  */
 function validateAuth(req) {
   const authHeader = req.headers.authorization;
@@ -116,84 +83,168 @@ function validateAuth(req) {
     return false;
   }
 
-  return parts[1] === authToken;
+  const providedToken = parts[1];
+  if (providedToken.length !== authToken.length) {
+    return false;
+  }
+
+  // Use timing-safe comparison to prevent timing attacks
+  return crypto.timingSafeEqual(
+    Buffer.from(providedToken),
+    Buffer.from(authToken),
+  );
 }
 
 // ============================================================================
-// CHROMADB CLIENT
+// CORS - Localhost only
 // ============================================================================
 
-class ChromaClient {
-  constructor(baseUrl) {
-    this.baseUrl = baseUrl;
+/**
+ * Check if origin is allowed for CORS
+ * Only allows localhost/127.0.0.1 on any port
+ */
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  } catch {
+    return false;
   }
+}
 
-  async request(method, path, body = null) {
-    const url = `${this.baseUrl}${path}`;
-    const options = {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-    };
-    if (body) {
-      options.body = JSON.stringify(body);
-    }
+function getCorsOrigin(origin) {
+  if (!origin) return null;
+  return isAllowedOrigin(origin) ? origin : null;
+}
 
-    const res = await fetch(url, options);
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`ChromaDB error: ${res.status} ${text}`);
-    }
-    return res.json();
-  }
+// ============================================================================
+// JSON DATABASE
+// ============================================================================
 
-  async ensureCollection(name) {
+function loadDb() {
+  ensureDataDir();
+  if (fs.existsSync(DB_FILE)) {
     try {
-      await this.request('POST', '/api/v1/collections', {
-        name,
-        metadata: { 'hnsw:space': 'cosine' },
-        get_or_create: true,
-      });
-    } catch (err) {
-      // Collection might already exist
-      console.error('Collection setup:', err.message);
+      return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+    } catch {
+      return { memories: {}, profiles: {} };
+    }
+  }
+  return { memories: {}, profiles: {} };
+}
+
+function saveDb(db) {
+  ensureDataDir();
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), { mode: 0o600 });
+}
+
+// ============================================================================
+// TEXT SEARCH (TF-IDF-like scoring)
+// ============================================================================
+
+function tokenize(text) {
+  if (!text) return [];
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
+}
+
+function calculateScore(queryTokens, docTokens) {
+  if (queryTokens.length === 0 || docTokens.length === 0) return 0;
+
+  const docSet = new Set(docTokens);
+  let matches = 0;
+
+  for (const token of queryTokens) {
+    if (docSet.has(token)) matches++;
+  }
+
+  return matches / queryTokens.length;
+}
+
+function searchMemories(db, containerTag, query, limit = 10) {
+  const startTime = Date.now();
+  const memories = db.memories[containerTag] || [];
+
+  if (memories.length === 0) {
+    return { results: [], total: 0, timing: Date.now() - startTime };
+  }
+
+  const queryTokens = tokenize(query);
+  const scored = memories
+    .filter((m) => !m.deleted)
+    .map((m) => ({
+      ...m,
+      score: calculateScore(queryTokens, tokenize(m.content)),
+    }))
+    .filter((m) => m.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  const maxScore = scored.length > 0 ? scored[0].score : 1;
+
+  return {
+    results: scored.map((m) => ({
+      id: m.id,
+      content: m.content,
+      memory: m.content,
+      title: m.title,
+      similarity: m.score / maxScore,
+      metadata: m.metadata,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    })),
+    total: scored.length,
+    timing: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// PROFILE GENERATION
+// ============================================================================
+
+function generateProfile(db, containerTag) {
+  const memories = db.memories[containerTag] || [];
+  const recent = memories.filter((m) => !m.deleted).slice(-50);
+
+  if (recent.length === 0) {
+    return { static: [], dynamic: [] };
+  }
+
+  const staticPatterns = [
+    /(?:prefers?|likes?|uses?|wants?)\s+(.{5,60}?)(?:\.|,|$)/gi,
+    /(?:always|usually|typically)\s+(.{5,60}?)(?:\.|,|$)/gi,
+  ];
+
+  const dynamicPatterns = [
+    /(?:working on|implementing|building|fixing)\s+(.{5,60}?)(?:\.|,|$)/gi,
+    /(?:just|recently|currently)\s+(.{5,60}?)(?:\.|,|$)/gi,
+  ];
+
+  const staticFacts = new Set();
+  const dynamicFacts = new Set();
+
+  for (const mem of recent) {
+    for (const pattern of staticPatterns) {
+      for (const match of mem.content.matchAll(pattern)) {
+        if (match[1] && staticFacts.size < 10) staticFacts.add(match[1].trim());
+      }
+    }
+    for (const pattern of dynamicPatterns) {
+      for (const match of mem.content.matchAll(pattern)) {
+        if (match[1] && dynamicFacts.size < 10)
+          dynamicFacts.add(match[1].trim());
+      }
     }
   }
 
-  async add(collection, documents, metadatas, ids) {
-    // ChromaDB will generate embeddings if we use the default embedding function
-    // For simplicity, we'll use the collection's add endpoint
-    return this.request('POST', `/api/v1/collections/${collection}/add`, {
-      documents,
-      metadatas,
-      ids,
-    });
-  }
-
-  async query(collection, queryTexts, nResults = 10) {
-    return this.request('POST', `/api/v1/collections/${collection}/query`, {
-      query_texts: queryTexts,
-      n_results: nResults,
-      include: ['documents', 'metadatas', 'distances'],
-    });
-  }
-
-  async get(collection, ids = null, where = null, limit = 20) {
-    const body = { include: ['documents', 'metadatas'] };
-    if (ids) body.ids = ids;
-    if (where) body.where = where;
-    if (limit) body.limit = limit;
-    return this.request('POST', `/api/v1/collections/${collection}/get`, body);
-  }
-
-  async delete(collection, ids) {
-    return this.request('POST', `/api/v1/collections/${collection}/delete`, {
-      ids,
-    });
-  }
-
-  async count(collection) {
-    return this.request('GET', `/api/v1/collections/${collection}/count`);
-  }
+  return {
+    static: Array.from(staticFacts),
+    dynamic: Array.from(dynamicFacts),
+  };
 }
 
 // ============================================================================
@@ -211,181 +262,100 @@ function extractTitle(content, maxLength = 100) {
   return firstLine.slice(0, maxLength) + '...';
 }
 
-function sanitizeCollectionName(tag) {
-  // ChromaDB collection names must be alphanumeric with underscores
-  return tag.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 63);
-}
-
 // ============================================================================
 // API HANDLERS
 // ============================================================================
 
-async function handleAdd(chroma, body) {
+async function handleAdd(db, body) {
   const { content, containerTag, metadata, customId } = body;
 
   if (!content) {
     return { error: 'content is required', status: 400 };
   }
 
-  const collection = sanitizeCollectionName(containerTag || 'default');
-  await chroma.ensureCollection(collection);
+  const tag = containerTag || 'default';
+  if (!db.memories[tag]) {
+    db.memories[tag] = [];
+  }
 
   const id = customId || generateId();
-  const title = extractTitle(content);
+  const now = new Date().toISOString();
 
-  const meta = {
-    ...(metadata || {}),
-    title: title || '',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+  db.memories[tag].push({
+    id,
+    content,
+    title: extractTitle(content),
+    metadata: metadata || {},
+    createdAt: now,
+    updatedAt: now,
+    deleted: false,
+  });
 
-  await chroma.add(collection, [content], [meta], [id]);
-
+  saveDb(db);
   return { id, status: 'ok' };
 }
 
-async function handleProfile(chroma, body) {
+async function handleProfile(db, body) {
   const { containerTag, q } = body;
 
   if (!containerTag) {
     return { error: 'containerTag is required', status: 400 };
   }
 
-  const collection = sanitizeCollectionName(containerTag);
-
-  // Get recent memories for profile generation
-  let staticFacts = [];
-  let dynamicFacts = [];
-
-  try {
-    const recent = await chroma.get(collection, null, null, 50);
-    if (recent.documents && recent.documents.length > 0) {
-      // Extract facts from content
-      const allContent = recent.documents.join('\n');
-
-      // Simple fact extraction
-      const staticPatterns = [
-        /(?:prefers?|likes?|uses?|wants?)\s+(.{5,50}?)(?:\.|,|$)/gi,
-      ];
-      const dynamicPatterns = [
-        /(?:working on|implementing|building)\s+(.{5,50}?)(?:\.|,|$)/gi,
-      ];
-
-      for (const pattern of staticPatterns) {
-        const matches = allContent.matchAll(pattern);
-        for (const match of matches) {
-          if (match[1] && staticFacts.length < 10) {
-            staticFacts.push(match[1].trim());
-          }
-        }
-      }
-
-      for (const pattern of dynamicPatterns) {
-        const matches = allContent.matchAll(pattern);
-        for (const match of matches) {
-          if (match[1] && dynamicFacts.length < 10) {
-            dynamicFacts.push(match[1].trim());
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Profile generation error:', err.message);
-  }
+  const profile = generateProfile(db, containerTag);
 
   let searchResults;
   if (q) {
-    try {
-      const results = await chroma.query(collection, [q], 5);
-      searchResults = {
-        results: (results.documents?.[0] || []).map((doc, i) => ({
-          id: results.ids?.[0]?.[i] || generateId(),
-          content: doc,
-          memory: doc,
-          similarity: 1 - (results.distances?.[0]?.[i] || 0),
-          title: results.metadatas?.[0]?.[i]?.title || null,
-        })),
-        total: results.documents?.[0]?.length || 0,
-        timing: 0,
-      };
-    } catch (err) {
-      console.error('Search error:', err.message);
-    }
+    searchResults = searchMemories(db, containerTag, q, 5);
   }
 
-  return {
-    profile: { static: staticFacts, dynamic: dynamicFacts },
-    searchResults,
-  };
+  return { profile, searchResults };
 }
 
-async function handleSearchMemories(chroma, body) {
+async function handleSearchMemories(db, body) {
   const { q, containerTag, limit = 10 } = body;
 
   if (!q) {
     return { error: 'q is required', status: 400 };
   }
 
-  const collection = sanitizeCollectionName(containerTag || 'default');
-  const startTime = Date.now();
-
-  try {
-    const results = await chroma.query(collection, [q], Math.min(limit, 50));
-
-    return {
-      results: (results.documents?.[0] || []).map((doc, i) => ({
-        id: results.ids?.[0]?.[i] || generateId(),
-        content: doc,
-        memory: doc,
-        similarity: 1 - (results.distances?.[0]?.[i] || 0),
-        title: results.metadatas?.[0]?.[i]?.title || null,
-        metadata: results.metadatas?.[0]?.[i] || null,
-      })),
-      total: results.documents?.[0]?.length || 0,
-      timing: Date.now() - startTime,
-    };
-  } catch (err) {
-    console.error('Search error:', err.message);
-    return { results: [], total: 0, timing: Date.now() - startTime };
-  }
+  return searchMemories(db, containerTag || 'default', q, Math.min(limit, 50));
 }
 
-async function handleListMemories(chroma, body) {
+async function handleListMemories(db, body) {
   const { containerTags, limit = 20 } = body;
 
-  const tag = Array.isArray(containerTags) ? containerTags[0] : containerTags;
-  const collection = sanitizeCollectionName(tag || 'default');
+  const tag = Array.isArray(containerTags)
+    ? containerTags[0]
+    : containerTags || 'default';
+  const memories = (db.memories[tag] || [])
+    .filter((m) => !m.deleted)
+    .slice(-limit)
+    .reverse();
 
-  try {
-    const results = await chroma.get(collection, null, null, limit);
-
-    return {
-      memories: (results.documents || []).map((doc, i) => ({
-        id: results.ids?.[i] || generateId(),
-        content: doc,
-        title: results.metadatas?.[i]?.title || null,
-        metadata: results.metadatas?.[i] || null,
-        createdAt: results.metadatas?.[i]?.created_at || null,
-        updatedAt: results.metadatas?.[i]?.updated_at || null,
-      })),
-    };
-  } catch (err) {
-    console.error('List error:', err.message);
-    return { memories: [] };
-  }
+  return {
+    memories: memories.map((m) => ({
+      id: m.id,
+      content: m.content,
+      title: m.title,
+      metadata: m.metadata,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    })),
+  };
 }
 
-async function handleDeleteMemory(chroma, id, containerTag) {
-  const collection = sanitizeCollectionName(containerTag || 'default');
-
-  try {
-    await chroma.delete(collection, [id]);
-    return { status: 'ok' };
-  } catch (err) {
-    console.error('Delete error:', err.message);
-    return { error: 'Memory not found', status: 404 };
+async function handleDeleteMemory(db, id) {
+  for (const tag of Object.keys(db.memories)) {
+    const mem = db.memories[tag].find((m) => m.id === id);
+    if (mem) {
+      mem.deleted = true;
+      mem.updatedAt = new Date().toISOString();
+      saveDb(db);
+      return { status: 'ok' };
+    }
   }
+  return { error: 'Memory not found', status: 404 };
 }
 
 // ============================================================================
@@ -395,7 +365,7 @@ async function handleDeleteMemory(chroma, id, containerTag) {
 async function parseBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', chunk => {
+    req.on('data', (chunk) => {
       data += chunk;
       if (data.length > 10 * 1024 * 1024) {
         reject(new Error('Request body too large'));
@@ -404,7 +374,7 @@ async function parseBody(req) {
     req.on('end', () => {
       try {
         resolve(data ? JSON.parse(data) : {});
-      } catch (err) {
+      } catch {
         reject(new Error('Invalid JSON'));
       }
     });
@@ -429,7 +399,7 @@ function sendError(res, message, statusCode = 400, origin = null) {
   sendJson(res, { error: message }, statusCode, origin);
 }
 
-async function handleRequest(chroma, req, res) {
+async function handleRequest(db, req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = url.pathname;
   const method = req.method;
@@ -444,7 +414,7 @@ async function handleRequest(chroma, req, res) {
         'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         'Access-Control-Max-Age': '86400',
-        'Vary': 'Origin',
+        Vary: 'Origin',
       });
     } else {
       res.writeHead(403);
@@ -453,7 +423,7 @@ async function handleRequest(chroma, req, res) {
     return;
   }
 
-  // Route handling - support both /v1 prefix and root paths
+  // Route handling
   const routePath = pathname.replace(/^\/v1/, '');
 
   // Health endpoint doesn't require auth
@@ -470,24 +440,31 @@ async function handleRequest(chroma, req, res) {
 
     if ((routePath === '/add' || routePath === '/') && method === 'POST') {
       const body = await parseBody(req);
-      result = await handleAdd(chroma, body);
+      result = await handleAdd(db, body);
     } else if (routePath === '/profile' && method === 'POST') {
       const body = await parseBody(req);
-      result = await handleProfile(chroma, body);
+      result = await handleProfile(db, body);
     } else if (routePath === '/search/memories' && method === 'POST') {
       const body = await parseBody(req);
-      result = await handleSearchMemories(chroma, body);
+      result = await handleSearchMemories(db, body);
     } else if (routePath === '/memories/list' && method === 'POST') {
       const body = await parseBody(req);
-      result = await handleListMemories(chroma, body);
+      result = await handleListMemories(db, body);
     } else if (routePath.startsWith('/memories/') && method === 'DELETE') {
       const id = routePath.split('/').pop();
-      const body = await parseBody(req).catch(() => ({}));
-      result = await handleDeleteMemory(chroma, id, body.containerTag);
+      result = await handleDeleteMemory(db, id);
     } else if (isHealthCheck) {
-      result = { status: 'ok', version: '1.0.0', storage: 'chromadb' };
+      const memCount = Object.values(db.memories)
+        .flat()
+        .filter((m) => !m.deleted).length;
+      result = {
+        status: 'ok',
+        version: '1.0.0',
+        storage: 'json',
+        memories: memCount,
+      };
     } else {
-      sendError(res, 'Not found', 404);
+      sendError(res, 'Not found', 404, origin);
       return;
     }
 
@@ -506,11 +483,11 @@ async function handleRequest(chroma, req, res) {
 // MAIN
 // ============================================================================
 
-async function main() {
-  console.log('Supermemory Local Backend (Docker + ChromaDB)');
-  console.log('==============================================');
-  console.log(`ChromaDB URL: ${CHROMA_URL}`);
-  console.log(`API Port: ${PORT}`);
+function main() {
+  console.log('Supermemory Local Backend');
+  console.log('=========================');
+  console.log(`Data directory: ${DATA_DIR}`);
+  console.log(`Database: ${DB_FILE}`);
 
   ensureDataDir();
 
@@ -518,36 +495,27 @@ async function main() {
   authToken = loadOrCreateAuthToken();
   console.log(`Auth token file: ${AUTH_TOKEN_FILE}`);
   console.log(`Auth token: ${authToken}`);
+  console.log('');
 
-  const chroma = new ChromaClient(CHROMA_URL);
-
-  // Test connection
-  try {
-    await fetch(`${CHROMA_URL}/api/v1/heartbeat`);
-    console.log('ChromaDB connection: OK');
-  } catch (err) {
-    console.error('');
-    console.error('ERROR: Cannot connect to ChromaDB');
-    console.error('Make sure Docker is running with:');
-    console.error('  docker compose up -d');
-    console.error('');
-    process.exit(1);
-  }
+  const db = loadDb();
+  const memCount = Object.values(db.memories)
+    .flat()
+    .filter((m) => !m.deleted).length;
+  console.log(`Loaded ${memCount} memories`);
 
   const server = http.createServer((req, res) => {
-    handleRequest(chroma, req, res);
+    handleRequest(db, req, res);
   });
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log('');
     console.log(`Server running at http://127.0.0.1:${PORT}`);
     console.log('');
-    console.log('To use with the plugin, set:');
+    console.log('To use with the plugin:');
     console.log(`  export SUPERMEMORY_API_URL=http://127.0.0.1:${PORT}`);
     console.log('  export SUPERMEMORY_CC_API_KEY=local_ignored');
   });
 
-  // Graceful shutdown
   process.on('SIGINT', () => {
     console.log('\nShutting down...');
     server.close();
