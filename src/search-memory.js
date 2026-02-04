@@ -1,15 +1,26 @@
 const { SupermemoryClient } = require('./lib/supermemory-client');
-const { getContainerTag, getProjectName } = require('./lib/container-tag');
+const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
 const { loadSettings, getApiKey } = require('./lib/settings');
+const { sanitizeQuery, MAX_QUERY_LENGTH } = require('./lib/security');
 
 async function main() {
-  const query = process.argv.slice(2).join(' ');
+  const rawQuery = process.argv.slice(2).join(' ');
 
-  if (!query || !query.trim()) {
+  if (!rawQuery || !rawQuery.trim()) {
     console.log(
       'No search query provided. Please specify what you want to search for.',
     );
     return;
+  }
+
+  // Sanitize query
+  const query = sanitizeQuery(rawQuery);
+  if (!query) {
+    console.log('Query is empty after sanitization.');
+    return;
+  }
+  if (rawQuery.length > MAX_QUERY_LENGTH) {
+    console.log(`Note: Query was truncated to ${MAX_QUERY_LENGTH} characters.`);
   }
 
   const settings = loadSettings();
@@ -27,6 +38,13 @@ async function main() {
   }
 
   const cwd = process.cwd();
+
+  // Validate cwd
+  if (!validateCwd(cwd)) {
+    console.log('Error: Invalid working directory.');
+    return;
+  }
+
   const containerTag = getContainerTag(cwd);
   const projectName = getProjectName(cwd);
 

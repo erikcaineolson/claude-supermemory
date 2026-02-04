@@ -1,12 +1,14 @@
 # Claude-Supermemory
 
-<img width="1386" height="258" alt="Screenshot 2026-01-28 at 11 34 13 PM" src="https://github.com/user-attachments/assets/a692791a-a054-495a-ab53-45f1071ff26f" />
-
-> **✨ Requires [Supermemory Pro or above](https://console.supermemory.ai/billing)** - Unlock the state of the art memory for your OpenClaw bot.
-
-A Claude Code plugin that gives your AI persistent memory across sessions using [Supermemory](https://supermemory.ai).
+A Claude Code plugin that gives your AI persistent memory across sessions.
 Your agent remembers what you worked on - across sessions, across projects.
 
+## Choose Your Backend
+
+| Option | Privacy | Setup | Cost |
+|--------|---------|-------|------|
+| **Local Backend** | ✅ 100% local, no data leaves your machine | Docker + Node.js | Free |
+| **Supermemory Cloud** | ❌ Data stored on their servers | None | Pro subscription |
 
 ## Features
 
@@ -14,23 +16,93 @@ Your agent remembers what you worked on - across sessions, across projects.
 - **Automatic Capture**: Conversation turns are captured and stored for future context
 - **Codebase Indexing**: Index your project's architecture, patterns, and conventions
 
-## Installation
+---
+
+## Installation: Local Backend (Recommended)
+
+All data stays on your machine. No external API calls.
+
+### Prerequisites
+
+- Docker Desktop running
+- Node.js 18+
+
+### Step 1: Start the Local Backend
 
 ```bash
-# Add the plugin marketplace
-/plugin marketplace add supermemoryai/claude-supermemory
+cd local-backend
 
-# Or from local directory
+# Start ChromaDB vector database
+docker compose up -d
+
+# Start the API server (keep this terminal open)
+npm start
+```
+
+You should see:
+```
+Supermemory Local Backend (Docker + ChromaDB)
+==============================================
+ChromaDB connection: OK
+Server running at http://127.0.0.1:19877
+```
+
+### Step 2: Configure Environment
+
+Add to your shell profile (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export SUPERMEMORY_API_URL=http://127.0.0.1:19877
+export SUPERMEMORY_CC_API_KEY=local_ignored
+```
+
+Reload your shell:
+```bash
+source ~/.zshrc  # or source ~/.bashrc
+```
+
+### Step 3: Install the Plugin
+
+In Claude Code, run:
+
+```
 /plugin marketplace add /path/to/claude-supermemory
-
-# Install the plugin
 /plugin install claude-supermemory
+```
 
+### Step 4: Restart Claude Code
+
+Exit and start a new session. The plugin will connect to your local backend.
+
+### Daily Usage
+
+Before starting Claude Code, ensure the backend is running:
+
+```bash
+cd /path/to/claude-supermemory/local-backend
+docker compose up -d   # Start ChromaDB if not running
+npm start              # Start API server
+```
+
+---
+
+## Installation: Supermemory Cloud (Alternative)
+
+If you prefer the hosted service:
+
+```bash
 # Set your API key
 export SUPERMEMORY_CC_API_KEY="sm_..."
 ```
 
 Get your API key at [console.supermemory.ai](https://console.supermemory.ai).
+
+Then install the plugin:
+
+```
+/plugin marketplace add /path/to/claude-supermemory
+/plugin install claude-supermemory
+```
 
 ## How It Works
 

@@ -1,0 +1,17 @@
+{
+  "name": "supermemory-local",
+  "version": "1.0.0",
+  "description": "Self-hosted Supermemory-compatible backend using Docker + ChromaDB",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

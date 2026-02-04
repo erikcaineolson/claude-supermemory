@@ -8,15 +8,42 @@ const TRACKER_DIR = path.join(os.homedir(), '.supermemory-claude', 'trackers');
 
 let toolUseMap = new Map();
 
+/**
+ * Sanitize session ID to prevent path traversal attacks.
+ * Only allows alphanumeric characters, hyphens, and underscores.
+ */
+function sanitizeSessionId(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') {
+    throw new Error('Invalid session ID: must be a non-empty string');
+  }
+  // Only allow alphanumeric, hyphen, underscore
+  const sanitized = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (sanitized.length === 0) {
+    throw new Error('Invalid session ID: contains no valid characters');
+  }
+  if (sanitized !== sessionId) {
+    // Log warning but continue with sanitized version
+    console.error(
+      `Warning: Session ID contained invalid characters, sanitized from "${sessionId}" to "${sanitized}"`,
+    );
+  }
+  return sanitized;
+}
+
 function ensureTrackerDir() {
-  if (!fs.existsSync(TRACKER_DIR)) {
-    fs.mkdirSync(TRACKER_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(TRACKER_DIR)) {
+      fs.mkdirSync(TRACKER_DIR, { recursive: true, mode: 0o700 });
+    }
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
   }
 }
 
 function getLastCapturedUuid(sessionId) {
   ensureTrackerDir();
-  const trackerFile = path.join(TRACKER_DIR, `${sessionId}.txt`);
+  const safeSessionId = sanitizeSessionId(sessionId);
+  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
   if (fs.existsSync(trackerFile)) {
     return fs.readFileSync(trackerFile, 'utf-8').trim();
   }
@@ -25,8 +52,9 @@ function getLastCapturedUuid(sessionId) {
 
 function setLastCapturedUuid(sessionId, uuid) {
   ensureTrackerDir();
-  const trackerFile = path.join(TRACKER_DIR, `${sessionId}.txt`);
-  fs.writeFileSync(trackerFile, uuid);
+  const safeSessionId = sanitizeSessionId(sessionId);
+  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
+  fs.writeFileSync(trackerFile, uuid, { mode: 0o600 });
 }
 
 function parseTranscript(transcriptPath) {
@@ -42,7 +70,12 @@ function parseTranscript(transcriptPath) {
     if (!line.trim()) continue;
     try {
       entries.push(JSON.parse(line));
-    } catch {}
+    } catch (err) {
+      // Log parsing errors for debugging but continue processing
+      if (process.env.SUPERMEMORY_DEBUG === 'true') {
+        console.error(`Failed to parse transcript line: ${err.message}`);
+      }
+    }
   }
 
   return entries;
@@ -225,4 +258,5 @@ module.exports = {
   truncate,
   getLastCapturedUuid,
   setLastCapturedUuid,
+  sanitizeSessionId,
 };
