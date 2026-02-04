@@ -1,5 +1,9 @@
 const { createClient, isLocalBackend } = require('./lib/client-factory');
-const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
+const {
+  getContainerTag,
+  getProjectName,
+  validateCwd,
+} = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
 const { startAuthFlow } = require('./lib/auth');
@@ -7,7 +11,7 @@ const { formatContext } = require('./lib/format-context');
 const { auditLog } = require('./lib/security');
 
 async function main() {
-  const settings = loadSettings();
+  const settings = await loadSettings();
 
   try {
     const input = await readStdin();
@@ -35,13 +39,12 @@ Invalid working directory. Session will continue without memory context.
 
     // For local backend, skip auth flow
     if (!isLocalBackend()) {
-      let apiKey;
       try {
-        apiKey = getApiKey(settings);
+        await getApiKey(settings);
       } catch {
         try {
           debugLog(settings, 'No API key found, starting browser auth flow');
-          apiKey = await startAuthFlow();
+          await startAuthFlow();
           debugLog(settings, 'Auth flow completed successfully');
         } catch (authErr) {
           const isTimeout = authErr.message === 'AUTH_TIMEOUT';
@@ -60,7 +63,7 @@ Or set SUPERMEMORY_CC_API_KEY environment variable manually.
       }
     }
 
-    const client = createClient(containerTag);
+    const client = await createClient(containerTag);
     const profileResult = await client
       .getProfile(containerTag, projectName)
       .catch(() => null);

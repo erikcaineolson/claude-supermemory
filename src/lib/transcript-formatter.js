@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 
@@ -30,33 +31,140 @@ function sanitizeSessionId(sessionId) {
   return sanitized;
 }
 
-function ensureTrackerDir() {
+async function ensureTrackerDir() {
   try {
-    if (!fs.existsSync(TRACKER_DIR)) {
-      fs.mkdirSync(TRACKER_DIR, { recursive: true, mode: 0o700 });
-    }
+    await fsPromises.mkdir(TRACKER_DIR, { recursive: true, mode: 0o700 });
   } catch (err) {
     if (err.code !== 'EEXIST') throw err;
   }
 }
 
-function getLastCapturedUuid(sessionId) {
-  ensureTrackerDir();
+/**
+ * Get tracker data (uuid and offset) for a session
+ * @param {string} sessionId
+ * @returns {Promise<{uuid: string|null, offset: number}>}
+ */
+async function getTrackerData(sessionId) {
+  await ensureTrackerDir();
   const safeSessionId = sanitizeSessionId(sessionId);
-  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
-  if (fs.existsSync(trackerFile)) {
-    return fs.readFileSync(trackerFile, 'utf-8').trim();
+  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.json`);
+
+  try {
+    const content = await fsPromises.readFile(trackerFile, 'utf-8');
+    const data = JSON.parse(content);
+    return {
+      uuid: data.uuid || null,
+      offset: typeof data.offset === 'number' ? data.offset : 0,
+    };
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      if (process.env.SUPERMEMORY_DEBUG === 'true') {
+        console.error(`Failed to read tracker file: ${err.message}`);
+      }
+    }
   }
-  return null;
+
+  // Check for legacy .txt tracker file and migrate
+  const legacyFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
+  try {
+    const uuid = (await fsPromises.readFile(legacyFile, 'utf-8')).trim();
+    if (uuid) {
+      return { uuid, offset: 0 };
+    }
+  } catch {
+    // Legacy file doesn't exist, that's fine
+  }
+
+  return { uuid: null, offset: 0 };
 }
 
-function setLastCapturedUuid(sessionId, uuid) {
-  ensureTrackerDir();
+/**
+ * Save tracker data for a session
+ * @param {string} sessionId
+ * @param {string} uuid
+ * @param {number} offset
+ */
+async function setTrackerData(sessionId, uuid, offset) {
+  await ensureTrackerDir();
   const safeSessionId = sanitizeSessionId(sessionId);
-  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
-  fs.writeFileSync(trackerFile, uuid, { mode: 0o600 });
+  const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.json`);
+  await fsPromises.writeFile(trackerFile, JSON.stringify({ uuid, offset }), {
+    mode: 0o600,
+  });
 }
 
+// Legacy functions for backwards compatibility
+async function getLastCapturedUuid(sessionId) {
+  const data = await getTrackerData(sessionId);
+  return data.uuid;
+}
+
+async function setLastCapturedUuid(sessionId, uuid) {
+  // Get current offset to preserve it
+  const current = await getTrackerData(sessionId);
+  await setTrackerData(sessionId, uuid, current.offset);
+}
+
+/**
+ * Parse transcript with incremental reading support
+ * @param {string} transcriptPath
+ * @param {number} startOffset - byte offset to start reading from
+ * @returns {Promise<{entries: Array, endOffset: number}>}
+ */
+async function parseTranscriptIncremental(transcriptPath, startOffset = 0) {
+  const entries = [];
+
+  try {
+    const stats = await fsPromises.stat(transcriptPath);
+    const fileSize = stats.size;
+
+    // If file is smaller than offset, file was truncated - read from beginning
+    const effectiveOffset = startOffset > fileSize ? 0 : startOffset;
+
+    // Open file for reading
+    const handle = await fsPromises.open(transcriptPath, 'r');
+    try {
+      // Read from offset to end
+      const buffer = Buffer.alloc(fileSize - effectiveOffset);
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        effectiveOffset,
+      );
+
+      if (bytesRead > 0) {
+        const content = buffer.slice(0, bytesRead).toString('utf-8');
+        const lines = content.split('\n');
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            entries.push(JSON.parse(line));
+          } catch (err) {
+            // Log parsing errors for debugging but continue processing
+            if (process.env.SUPERMEMORY_DEBUG === 'true') {
+              console.error(`Failed to parse transcript line: ${err.message}`);
+            }
+          }
+        }
+      }
+
+      return { entries, endOffset: fileSize };
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      if (process.env.SUPERMEMORY_DEBUG === 'true') {
+        console.error(`Failed to read transcript: ${err.message}`);
+      }
+    }
+    return { entries: [], endOffset: 0 };
+  }
+}
+
+// Legacy sync function for backwards compatibility
 function parseTranscript(transcriptPath) {
   if (!fs.existsSync(transcriptPath)) {
     return [];
@@ -212,51 +320,141 @@ function truncate(text, maxLength) {
   return `${text.slice(0, maxLength)}...`;
 }
 
+/**
+ * Format new entries from transcript (async version with incremental parsing)
+ * @param {string} transcriptPath
+ * @param {string} sessionId
+ * @returns {Promise<string|null>}
+ */
+async function formatNewEntriesAsync(transcriptPath, sessionId) {
+  toolUseMap = new Map();
+
+  try {
+    // Get tracker data with offset
+    const tracker = await getTrackerData(sessionId);
+
+    // Parse transcript incrementally from last offset
+    const { entries, endOffset } = await parseTranscriptIncremental(
+      transcriptPath,
+      tracker.offset,
+    );
+
+    if (entries.length === 0) return null;
+
+    // Filter to new entries since last UUID
+    const newEntries = getEntriesSinceLastCapture(entries, tracker.uuid);
+
+    if (newEntries.length === 0) {
+      // Update offset even if no new entries (file grew but no relevant content)
+      await setTrackerData(sessionId, tracker.uuid, endOffset);
+      return null;
+    }
+
+    const firstEntry = newEntries[0];
+    const lastEntry = newEntries[newEntries.length - 1];
+    const timestamp = firstEntry.timestamp || new Date().toISOString();
+
+    const formattedParts = [];
+
+    formattedParts.push(`[turn:start timestamp="${timestamp}"]`);
+
+    for (const entry of newEntries) {
+      const formatted = formatEntry(entry);
+      if (formatted) {
+        formattedParts.push(formatted);
+      }
+    }
+
+    formattedParts.push('[turn:end]');
+
+    const result = formattedParts.join('\n\n');
+
+    if (result.length < 100) return null;
+
+    // Save both UUID and offset
+    await setTrackerData(sessionId, lastEntry.uuid, endOffset);
+
+    return result;
+  } finally {
+    // Always clear toolUseMap to prevent memory leaks
+    toolUseMap = new Map();
+  }
+}
+
+// Legacy sync function for backwards compatibility
 function formatNewEntries(transcriptPath, sessionId) {
   toolUseMap = new Map();
 
-  const entries = parseTranscript(transcriptPath);
-  if (entries.length === 0) return null;
+  try {
+    const entries = parseTranscript(transcriptPath);
+    if (entries.length === 0) return null;
 
-  const lastCapturedUuid = getLastCapturedUuid(sessionId);
-  const newEntries = getEntriesSinceLastCapture(entries, lastCapturedUuid);
-
-  if (newEntries.length === 0) return null;
-
-  const firstEntry = newEntries[0];
-  const lastEntry = newEntries[newEntries.length - 1];
-  const timestamp = firstEntry.timestamp || new Date().toISOString();
-
-  const formattedParts = [];
-
-  formattedParts.push(`[turn:start timestamp="${timestamp}"]`);
-
-  for (const entry of newEntries) {
-    const formatted = formatEntry(entry);
-    if (formatted) {
-      formattedParts.push(formatted);
+    // Use sync version for backwards compat
+    const safeSessionId = sanitizeSessionId(sessionId);
+    const trackerFile = path.join(TRACKER_DIR, `${safeSessionId}.txt`);
+    let lastCapturedUuid = null;
+    try {
+      if (fs.existsSync(trackerFile)) {
+        lastCapturedUuid = fs.readFileSync(trackerFile, 'utf-8').trim();
+      }
+    } catch {
+      // Ignore
     }
+
+    const newEntries = getEntriesSinceLastCapture(entries, lastCapturedUuid);
+
+    if (newEntries.length === 0) return null;
+
+    const firstEntry = newEntries[0];
+    const lastEntry = newEntries[newEntries.length - 1];
+    const timestamp = firstEntry.timestamp || new Date().toISOString();
+
+    const formattedParts = [];
+
+    formattedParts.push(`[turn:start timestamp="${timestamp}"]`);
+
+    for (const entry of newEntries) {
+      const formatted = formatEntry(entry);
+      if (formatted) {
+        formattedParts.push(formatted);
+      }
+    }
+
+    formattedParts.push('[turn:end]');
+
+    const result = formattedParts.join('\n\n');
+
+    if (result.length < 100) return null;
+
+    // Save UUID (sync version)
+    try {
+      if (!fs.existsSync(TRACKER_DIR)) {
+        fs.mkdirSync(TRACKER_DIR, { recursive: true, mode: 0o700 });
+      }
+      fs.writeFileSync(trackerFile, lastEntry.uuid, { mode: 0o600 });
+    } catch {
+      // Ignore
+    }
+
+    return result;
+  } finally {
+    // Always clear toolUseMap to prevent memory leaks
+    toolUseMap = new Map();
   }
-
-  formattedParts.push('[turn:end]');
-
-  const result = formattedParts.join('\n\n');
-
-  if (result.length < 100) return null;
-
-  setLastCapturedUuid(sessionId, lastEntry.uuid);
-
-  return result;
 }
 
 module.exports = {
   parseTranscript,
+  parseTranscriptIncremental,
   getEntriesSinceLastCapture,
   formatEntry,
   formatNewEntries,
+  formatNewEntriesAsync,
   cleanContent,
   truncate,
   getLastCapturedUuid,
   setLastCapturedUuid,
+  getTrackerData,
+  setTrackerData,
   sanitizeSessionId,
 };

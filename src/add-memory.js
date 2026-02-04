@@ -1,7 +1,15 @@
 const { SupermemoryClient } = require('./lib/supermemory-client');
-const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
+const {
+  getContainerTag,
+  getProjectName,
+  validateCwd,
+} = require('./lib/container-tag');
 const { loadSettings, getApiKey } = require('./lib/settings');
-const { sanitizeContent, auditLog, MAX_CONTENT_LENGTH } = require('./lib/security');
+const {
+  sanitizeContent,
+  auditLog,
+  MAX_CONTENT_LENGTH,
+} = require('./lib/security');
 
 async function main() {
   const rawContent = process.argv.slice(2).join(' ');
@@ -20,7 +28,9 @@ async function main() {
     auditLog('manual_add_redacted', { originalLength: rawContent.length });
   }
   if (sanitized.truncated) {
-    console.log(`Warning: Content was truncated to ${MAX_CONTENT_LENGTH} characters.`);
+    console.log(
+      `Warning: Content was truncated to ${MAX_CONTENT_LENGTH} characters.`,
+    );
   }
 
   const content = sanitized.content;
@@ -29,11 +39,11 @@ async function main() {
     return;
   }
 
-  const settings = loadSettings();
+  const settings = await loadSettings();
 
   let apiKey;
   try {
-    apiKey = getApiKey(settings);
+    apiKey = await getApiKey(settings);
   } catch {
     console.log('Supermemory API key not configured.');
     console.log('Set SUPERMEMORY_CC_API_KEY environment variable.');

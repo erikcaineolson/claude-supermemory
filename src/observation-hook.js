@@ -2,7 +2,7 @@ const { loadSettings, debugLog } = require('./lib/settings');
 const { readStdin, outputSuccess } = require('./lib/stdin');
 
 async function main() {
-  const settings = loadSettings();
+  const settings = await loadSettings();
 
   try {
     const input = await readStdin();

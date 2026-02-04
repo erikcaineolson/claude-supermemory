@@ -1,5 +1,9 @@
 const { SupermemoryClient } = require('./lib/supermemory-client');
-const { getContainerTag, getProjectName, validateCwd } = require('./lib/container-tag');
+const {
+  getContainerTag,
+  getProjectName,
+  validateCwd,
+} = require('./lib/container-tag');
 const { loadSettings, getApiKey } = require('./lib/settings');
 const { sanitizeQuery, MAX_QUERY_LENGTH } = require('./lib/security');
 
@@ -23,11 +27,11 @@ async function main() {
     console.log(`Note: Query was truncated to ${MAX_QUERY_LENGTH} characters.`);
   }
 
-  const settings = loadSettings();
+  const settings = await loadSettings();
 
   let apiKey;
   try {
-    apiKey = getApiKey(settings);
+    apiKey = await getApiKey(settings);
   } catch {
     console.log('Supermemory API key not configured.');
     console.log(

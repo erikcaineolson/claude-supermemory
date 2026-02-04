@@ -22,6 +22,36 @@ import crypto from 'node:crypto';
 const PORT = process.env.SUPERMEMORY_LOCAL_PORT || 19877;
 const CHROMA_URL = process.env.CHROMA_URL || 'http://127.0.0.1:8000';
 const DATA_DIR = path.join(os.homedir(), '.supermemory-local');
+const AUTH_TOKEN_FILE = path.join(DATA_DIR, 'auth.token');
+
+// Allowed CORS origins - localhost only for security
+const ALLOWED_ORIGINS = [
+  'http://localhost',
+  'http://127.0.0.1',
+];
+
+/**
+ * Check if origin is allowed for CORS
+ * Allows localhost/127.0.0.1 on any port
+ */
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // Allow requests with no origin (same-origin, curl, etc.)
+  try {
+    const url = new URL(origin);
+    return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get CORS origin header value
+ * Returns the origin if allowed, null otherwise
+ */
+function getCorsOrigin(origin) {
+  if (!origin) return null;
+  return isAllowedOrigin(origin) ? origin : null;
+}
 
 // ============================================================================
 // DATA DIRECTORY SETUP
@@ -31,6 +61,62 @@ function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   }
+}
+
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+let authToken = null;
+
+/**
+ * Generate a secure random token
+ */
+function generateAuthToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Load or create auth token
+ * Token is saved to ~/.supermemory-local/auth.token with mode 0600
+ */
+function loadOrCreateAuthToken() {
+  try {
+    if (fs.existsSync(AUTH_TOKEN_FILE)) {
+      const token = fs.readFileSync(AUTH_TOKEN_FILE, 'utf-8').trim();
+      if (token.length >= 32) {
+        return token;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to read auth token:', err.message);
+  }
+
+  // Generate new token
+  const token = generateAuthToken();
+  try {
+    fs.writeFileSync(AUTH_TOKEN_FILE, token, { mode: 0o600 });
+  } catch (err) {
+    console.error('Failed to save auth token:', err.message);
+  }
+  return token;
+}
+
+/**
+ * Validate authorization header
+ * @param {http.IncomingMessage} req
+ * @returns {boolean}
+ */
+function validateAuth(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return false;
+
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
+    return false;
+  }
+
+  return parts[1] === authToken;
 }
 
 // ============================================================================
@@ -326,57 +412,79 @@ async function parseBody(req) {
   });
 }
 
-function sendJson(res, data, statusCode = 200) {
-  res.writeHead(statusCode, {
+function sendJson(res, data, statusCode = 200, origin = null) {
+  const headers = {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-  });
+  };
+  const corsOrigin = getCorsOrigin(origin);
+  if (corsOrigin) {
+    headers['Access-Control-Allow-Origin'] = corsOrigin;
+    headers['Vary'] = 'Origin';
+  }
+  res.writeHead(statusCode, headers);
   res.end(JSON.stringify(data));
 }
 
-function sendError(res, message, statusCode = 400) {
-  sendJson(res, { error: message }, statusCode);
+function sendError(res, message, statusCode = 400, origin = null) {
+  sendJson(res, { error: message }, statusCode, origin);
 }
 
 async function handleRequest(chroma, req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = url.pathname;
   const method = req.method;
+  const origin = req.headers.origin;
 
   // CORS preflight
   if (method === 'OPTIONS') {
-    res.writeHead(200, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    });
+    const corsOrigin = getCorsOrigin(origin);
+    if (corsOrigin) {
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': corsOrigin,
+        'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+        'Vary': 'Origin',
+      });
+    } else {
+      res.writeHead(403);
+    }
     res.end();
+    return;
+  }
+
+  // Route handling - support both /v1 prefix and root paths
+  const routePath = pathname.replace(/^\/v1/, '');
+
+  // Health endpoint doesn't require auth
+  const isHealthCheck = routePath === '/health' || pathname === '/health';
+
+  // Validate auth for non-health endpoints
+  if (!isHealthCheck && !validateAuth(req)) {
+    sendError(res, 'Unauthorized - Bearer token required', 401, origin);
     return;
   }
 
   try {
     let result;
 
-    // Route handling - support both /v1 prefix and root paths
-    const path = pathname.replace(/^\/v1/, '');
-
-    if ((path === '/add' || path === '/') && method === 'POST') {
+    if ((routePath === '/add' || routePath === '/') && method === 'POST') {
       const body = await parseBody(req);
       result = await handleAdd(chroma, body);
-    } else if (path === '/profile' && method === 'POST') {
+    } else if (routePath === '/profile' && method === 'POST') {
       const body = await parseBody(req);
       result = await handleProfile(chroma, body);
-    } else if (path === '/search/memories' && method === 'POST') {
+    } else if (routePath === '/search/memories' && method === 'POST') {
       const body = await parseBody(req);
       result = await handleSearchMemories(chroma, body);
-    } else if (path === '/memories/list' && method === 'POST') {
+    } else if (routePath === '/memories/list' && method === 'POST') {
       const body = await parseBody(req);
       result = await handleListMemories(chroma, body);
-    } else if (path.startsWith('/memories/') && method === 'DELETE') {
-      const id = path.split('/').pop();
+    } else if (routePath.startsWith('/memories/') && method === 'DELETE') {
+      const id = routePath.split('/').pop();
       const body = await parseBody(req).catch(() => ({}));
       result = await handleDeleteMemory(chroma, id, body.containerTag);
-    } else if (path === '/health' || pathname === '/health') {
+    } else if (isHealthCheck) {
       result = { status: 'ok', version: '1.0.0', storage: 'chromadb' };
     } else {
       sendError(res, 'Not found', 404);
@@ -384,13 +492,13 @@ async function handleRequest(chroma, req, res) {
     }
 
     if (result.error) {
-      sendError(res, result.error, result.status || 400);
+      sendError(res, result.error, result.status || 400, origin);
     } else {
-      sendJson(res, result);
+      sendJson(res, result, 200, origin);
     }
   } catch (err) {
     console.error('Request error:', err);
-    sendError(res, err.message, 500);
+    sendError(res, err.message, 500, origin);
   }
 }
 
@@ -405,6 +513,11 @@ async function main() {
   console.log(`API Port: ${PORT}`);
 
   ensureDataDir();
+
+  // Load or create auth token
+  authToken = loadOrCreateAuthToken();
+  console.log(`Auth token file: ${AUTH_TOKEN_FILE}`);
+  console.log(`Auth token: ${authToken}`);
 
   const chroma = new ChromaClient(CHROMA_URL);
 

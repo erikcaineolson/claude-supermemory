@@ -1,5 +1,5 @@
 const http = require('node:http');
-const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
@@ -17,44 +17,53 @@ const AUTH_PORT = 19876;
 const AUTH_TIMEOUT = 25000;
 const MAX_AUTH_REQUESTS = 10;
 
-function ensureDir() {
+async function ensureDir() {
   try {
-    if (!fs.existsSync(SETTINGS_DIR)) {
-      fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
-    }
+    await fsPromises.mkdir(SETTINGS_DIR, { recursive: true, mode: 0o700 });
   } catch (err) {
     if (err.code !== 'EEXIST') throw err;
   }
 }
 
-function loadCredentials() {
+async function loadCredentials() {
   try {
-    if (fs.existsSync(CREDENTIALS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(CREDENTIALS_FILE, 'utf-8'));
-      if (data.apiKey) return data;
+    const data = await fsPromises.readFile(CREDENTIALS_FILE, 'utf-8');
+    const parsed = JSON.parse(data);
+    if (parsed.apiKey) return parsed;
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      auditLog('credentials_load_error', {
+        file: CREDENTIALS_FILE,
+        error: err.message,
+      });
     }
-  } catch {}
+  }
   return null;
 }
 
-function saveCredentials(apiKey) {
-  ensureDir();
+async function saveCredentials(apiKey) {
+  await ensureDir();
   const data = {
     apiKey,
     savedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify(data, null, 2), {
+  await fsPromises.writeFile(CREDENTIALS_FILE, JSON.stringify(data, null, 2), {
     mode: 0o600,
   });
   auditLog('credentials_saved', { file: CREDENTIALS_FILE });
 }
 
-function clearCredentials() {
+async function clearCredentials() {
   try {
-    if (fs.existsSync(CREDENTIALS_FILE)) {
-      fs.unlinkSync(CREDENTIALS_FILE);
+    await fsPromises.unlink(CREDENTIALS_FILE);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      auditLog('credentials_clear_error', {
+        file: CREDENTIALS_FILE,
+        error: err.message,
+      });
     }
-  } catch {}
+  }
 }
 
 function openBrowser(url) {
@@ -77,7 +86,7 @@ function startAuthFlow() {
     let resolved = false;
     let requestCount = 0;
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
       requestCount++;
 
       // Rate limit: close server after too many requests
@@ -101,7 +110,11 @@ function startAuthFlow() {
 
         if (apiKey?.startsWith('sm_')) {
           auditLog('auth_success', { keyPrefix: apiKey.slice(0, 6) });
-          saveCredentials(apiKey);
+          try {
+            await saveCredentials(apiKey);
+          } catch (err) {
+            auditLog('credentials_save_error', { error: err.message });
+          }
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(authSuccessHtml);
           resolved = true;

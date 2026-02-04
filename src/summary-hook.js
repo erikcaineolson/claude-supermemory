@@ -2,11 +2,11 @@ const { createClient, isLocalBackend } = require('./lib/client-factory');
 const { getContainerTag, getProjectName } = require('./lib/container-tag');
 const { loadSettings, getApiKey, debugLog } = require('./lib/settings');
 const { readStdin, writeOutput } = require('./lib/stdin');
-const { formatNewEntries } = require('./lib/transcript-formatter');
+const { formatNewEntriesAsync } = require('./lib/transcript-formatter');
 const { validateTranscriptPath, auditLog } = require('./lib/security');
 
 async function main() {
-  const settings = loadSettings();
+  const settings = await loadSettings();
 
   try {
     const input = await readStdin();
@@ -37,14 +37,14 @@ async function main() {
     // For cloud backend, verify API key exists
     if (!isLocalBackend()) {
       try {
-        getApiKey(settings);
+        await getApiKey(settings);
       } catch {
         writeOutput({ continue: true });
         return;
       }
     }
 
-    const formatted = formatNewEntries(transcriptPath, sessionId);
+    const formatted = await formatNewEntriesAsync(transcriptPath, sessionId);
 
     if (!formatted) {
       debugLog(settings, 'No new content to save');

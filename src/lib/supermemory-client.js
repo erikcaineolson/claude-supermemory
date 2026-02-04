@@ -19,26 +19,53 @@ const API_URL = getSecureApiUrl();
 // Rate limiter configuration
 const RATE_LIMIT_MAX_CALLS = 100;
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const RATE_LIMITER_COMPACT_THRESHOLD = 0.5; // Compact when valid calls < 50% of array
 
 /**
  * Simple rate limiter to prevent API abuse.
+ * Uses index-based pruning for efficiency.
  */
 class RateLimiter {
-  constructor(maxCalls = RATE_LIMIT_MAX_CALLS, windowMs = RATE_LIMIT_WINDOW_MS) {
+  constructor(
+    maxCalls = RATE_LIMIT_MAX_CALLS,
+    windowMs = RATE_LIMIT_WINDOW_MS,
+  ) {
     this.maxCalls = maxCalls;
     this.windowMs = windowMs;
     this.calls = [];
+    this.firstValidIndex = 0;
   }
 
   check() {
     const now = Date.now();
-    // Remove calls outside the window
-    this.calls = this.calls.filter((t) => now - t < this.windowMs);
-    if (this.calls.length >= this.maxCalls) {
+    const windowStart = now - this.windowMs;
+
+    // Find first valid index using index-based scan (more efficient than filter)
+    while (
+      this.firstValidIndex < this.calls.length &&
+      this.calls[this.firstValidIndex] < windowStart
+    ) {
+      this.firstValidIndex++;
+    }
+
+    // Count valid calls
+    const validCallCount = this.calls.length - this.firstValidIndex;
+
+    // Compact array if ratio of valid calls drops below threshold
+    if (
+      this.calls.length > 100 &&
+      validCallCount / this.calls.length < RATE_LIMITER_COMPACT_THRESHOLD
+    ) {
+      this.calls = this.calls.slice(this.firstValidIndex);
+      this.firstValidIndex = 0;
+    }
+
+    if (validCallCount >= this.maxCalls) {
       throw new Error(
         `Rate limit exceeded: ${this.maxCalls} calls per ${this.windowMs / 1000}s`,
       );
     }
+
     this.calls.push(now);
   }
 }

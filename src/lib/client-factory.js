@@ -17,7 +17,7 @@ const { loadSettings, getApiKey } = require('./settings.js');
  *
  * Otherwise uses Supermemory cloud (requires API key).
  */
-function createClient(containerTag) {
+async function createClient(containerTag) {
   if (isLocalBackend()) {
     console.error('Supermemory: Using local backend');
     return new LocalMemoryClient(containerTag);
@@ -25,8 +25,8 @@ function createClient(containerTag) {
 
   // Cloud backend - requires SDK and API key
   const { SupermemoryClient } = require('./supermemory-client.js');
-  const settings = loadSettings();
-  const apiKey = getApiKey(settings);
+  const settings = await loadSettings();
+  const apiKey = await getApiKey(settings);
   return new SupermemoryClient(apiKey, containerTag);
 }
 
@@ -49,8 +49,8 @@ async function isBackendAvailable() {
 
   // Cloud backend
   try {
-    const settings = loadSettings();
-    getApiKey(settings);
+    const settings = await loadSettings();
+    await getApiKey(settings);
     return true;
   } catch {
     return false;

@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { loadCredentials } = require('./auth');
@@ -31,11 +31,9 @@ const DEFAULT_SETTINGS = {
   injectProfile: true,
 };
 
-function ensureSettingsDir() {
+async function ensureSettingsDir() {
   try {
-    if (!fs.existsSync(SETTINGS_DIR)) {
-      fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
-    }
+    await fsPromises.mkdir(SETTINGS_DIR, { recursive: true, mode: 0o700 });
   } catch (err) {
     if (err.code !== 'EEXIST') throw err;
   }
@@ -52,15 +50,17 @@ function validateToolNames(toolNames) {
   );
 }
 
-function loadSettings() {
+async function loadSettings() {
   const settings = { ...DEFAULT_SETTINGS };
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const fileContent = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-      Object.assign(settings, JSON.parse(fileContent));
-    }
+    const fileContent = await fsPromises.readFile(SETTINGS_FILE, 'utf-8');
+    Object.assign(settings, JSON.parse(fileContent));
   } catch (err) {
-    console.error(`Settings: Failed to load ${SETTINGS_FILE}: ${err.message}`);
+    if (err.code !== 'ENOENT') {
+      console.error(
+        `Settings: Failed to load ${SETTINGS_FILE}: ${err.message}`,
+      );
+    }
   }
   if (process.env.SUPERMEMORY_CC_API_KEY)
     settings.apiKey = process.env.SUPERMEMORY_CC_API_KEY;
@@ -86,21 +86,21 @@ function loadSettings() {
   return settings;
 }
 
-function saveSettings(settings) {
-  ensureSettingsDir();
+async function saveSettings(settings) {
+  await ensureSettingsDir();
   const toSave = { ...settings };
   delete toSave.apiKey;
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(toSave, null, 2), {
+  await fsPromises.writeFile(SETTINGS_FILE, JSON.stringify(toSave, null, 2), {
     mode: 0o600,
   });
 }
 
-function getApiKey(settings) {
+async function getApiKey(settings) {
   if (settings.apiKey) return settings.apiKey;
   if (process.env.SUPERMEMORY_CC_API_KEY)
     return process.env.SUPERMEMORY_CC_API_KEY;
 
-  const credentials = loadCredentials();
+  const credentials = await loadCredentials();
   if (credentials?.apiKey) return credentials.apiKey;
 
   throw new Error('NO_API_KEY');

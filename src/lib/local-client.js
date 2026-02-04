@@ -5,6 +5,9 @@
  * Does not use the Supermemory SDK - makes direct HTTP calls to your local server.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 const {
   getSecureApiUrl,
   sanitizeContent,
@@ -13,25 +16,76 @@ const {
   auditLog,
 } = require('./security.js');
 
+const AUTH_TOKEN_FILE = path.join(
+  os.homedir(),
+  '.supermemory-local',
+  'auth.token',
+);
+
+/**
+ * Load auth token from file (sync for constructor compatibility)
+ * @returns {string|null}
+ */
+function loadAuthToken() {
+  try {
+    if (fs.existsSync(AUTH_TOKEN_FILE)) {
+      const token = fs.readFileSync(AUTH_TOKEN_FILE, 'utf-8').trim();
+      if (token.length >= 32) {
+        return token;
+      }
+    }
+  } catch (err) {
+    auditLog('auth_token_load_error', { error: err.message });
+  }
+  return null;
+}
+
 // Rate limiter (shared with supermemory-client.js)
 const RATE_LIMIT_MAX_CALLS = 100;
 const RATE_LIMIT_WINDOW_MS = 60000;
+const RATE_LIMITER_COMPACT_THRESHOLD = 0.5; // Compact when valid calls < 50% of array
 
 class RateLimiter {
-  constructor(maxCalls = RATE_LIMIT_MAX_CALLS, windowMs = RATE_LIMIT_WINDOW_MS) {
+  constructor(
+    maxCalls = RATE_LIMIT_MAX_CALLS,
+    windowMs = RATE_LIMIT_WINDOW_MS,
+  ) {
     this.maxCalls = maxCalls;
     this.windowMs = windowMs;
     this.calls = [];
+    this.firstValidIndex = 0;
   }
 
   check() {
     const now = Date.now();
-    this.calls = this.calls.filter((t) => now - t < this.windowMs);
-    if (this.calls.length >= this.maxCalls) {
+    const windowStart = now - this.windowMs;
+
+    // Find first valid index using index-based scan (more efficient than filter)
+    while (
+      this.firstValidIndex < this.calls.length &&
+      this.calls[this.firstValidIndex] < windowStart
+    ) {
+      this.firstValidIndex++;
+    }
+
+    // Count valid calls
+    const validCallCount = this.calls.length - this.firstValidIndex;
+
+    // Compact array if ratio of valid calls drops below threshold
+    if (
+      this.calls.length > 100 &&
+      validCallCount / this.calls.length < RATE_LIMITER_COMPACT_THRESHOLD
+    ) {
+      this.calls = this.calls.slice(this.firstValidIndex);
+      this.firstValidIndex = 0;
+    }
+
+    if (validCallCount >= this.maxCalls) {
       throw new Error(
         `Rate limit exceeded: ${this.maxCalls} calls per ${this.windowMs / 1000}s`,
       );
     }
+
     this.calls.push(now);
   }
 }
@@ -56,15 +110,23 @@ class LocalMemoryClient {
     this.baseUrl = getSecureApiUrl();
     this.containerTag = containerTag || 'claudecode_default';
     this.rateLimiter = new RateLimiter();
+    this.authToken = loadAuthToken();
   }
 
   async request(method, path, body = null) {
     const url = `${this.baseUrl}${path}`;
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+
+    // Add auth token if available
+    if (this.authToken) {
+      headers.Authorization = `Bearer ${this.authToken}`;
+    }
+
     const options = {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     };
 
     if (body) {
