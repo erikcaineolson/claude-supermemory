@@ -23,9 +23,9 @@ function sanitizeSessionId(sessionId) {
     throw new Error('Invalid session ID: contains no valid characters');
   }
   if (sanitized !== sessionId) {
-    // Log warning but continue with sanitized version
+    // Log warning but don't expose original session ID (may contain sensitive data)
     console.error(
-      `Warning: Session ID contained invalid characters, sanitized from "${sessionId}" to "${sanitized}"`,
+      `Warning: Session ID contained invalid characters and was sanitized`,
     );
   }
   return sanitized;

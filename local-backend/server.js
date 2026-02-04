@@ -174,20 +174,25 @@ function searchMemories(db, containerTag, query, limit = 10) {
   }
 
   const queryTokens = tokenize(query);
-  const scored = memories
-    .filter((m) => !m.deleted)
-    .map((m) => ({
-      ...m,
-      score: calculateScore(queryTokens, tokenize(m.content)),
-    }))
-    .filter((m) => m.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
 
-  const maxScore = scored.length > 0 ? scored[0].score : 1;
+  // Single-pass scoring to reduce intermediate arrays
+  const scored = [];
+  for (const m of memories) {
+    if (m.deleted) continue;
+    const score = calculateScore(queryTokens, tokenize(m.content));
+    if (score > 0) {
+      scored.push({ ...m, score });
+    }
+  }
+
+  // Sort and limit
+  scored.sort((a, b) => b.score - a.score);
+  const topResults = scored.slice(0, limit);
+
+  const maxScore = topResults.length > 0 ? topResults[0].score : 1;
 
   return {
-    results: scored.map((m) => ({
+    results: topResults.map((m) => ({
       id: m.id,
       content: m.content,
       memory: m.content,
@@ -206,6 +211,17 @@ function searchMemories(db, containerTag, query, limit = 10) {
 // PROFILE GENERATION
 // ============================================================================
 
+// Pre-compiled regex patterns (cached at module load)
+const STATIC_PATTERNS = [
+  /(?:prefers?|likes?|uses?|wants?)\s+(.{5,60}?)(?:\.|,|$)/gi,
+  /(?:always|usually|typically)\s+(.{5,60}?)(?:\.|,|$)/gi,
+];
+
+const DYNAMIC_PATTERNS = [
+  /(?:working on|implementing|building|fixing)\s+(.{5,60}?)(?:\.|,|$)/gi,
+  /(?:just|recently|currently)\s+(.{5,60}?)(?:\.|,|$)/gi,
+];
+
 function generateProfile(db, containerTag) {
   const memories = db.memories[containerTag] || [];
   const recent = memories.filter((m) => !m.deleted).slice(-50);
@@ -214,26 +230,19 @@ function generateProfile(db, containerTag) {
     return { static: [], dynamic: [] };
   }
 
-  const staticPatterns = [
-    /(?:prefers?|likes?|uses?|wants?)\s+(.{5,60}?)(?:\.|,|$)/gi,
-    /(?:always|usually|typically)\s+(.{5,60}?)(?:\.|,|$)/gi,
-  ];
-
-  const dynamicPatterns = [
-    /(?:working on|implementing|building|fixing)\s+(.{5,60}?)(?:\.|,|$)/gi,
-    /(?:just|recently|currently)\s+(.{5,60}?)(?:\.|,|$)/gi,
-  ];
-
   const staticFacts = new Set();
   const dynamicFacts = new Set();
 
   for (const mem of recent) {
-    for (const pattern of staticPatterns) {
+    for (const pattern of STATIC_PATTERNS) {
+      // Reset lastIndex for global regex reuse
+      pattern.lastIndex = 0;
       for (const match of mem.content.matchAll(pattern)) {
         if (match[1] && staticFacts.size < 10) staticFacts.add(match[1].trim());
       }
     }
-    for (const pattern of dynamicPatterns) {
+    for (const pattern of DYNAMIC_PATTERNS) {
+      pattern.lastIndex = 0;
       for (const match of mem.content.matchAll(pattern)) {
         if (match[1] && dynamicFacts.size < 10)
           dynamicFacts.add(match[1].trim());
@@ -367,8 +376,8 @@ async function parseBody(req) {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 10 * 1024 * 1024) {
-        reject(new Error('Request body too large'));
+      if (data.length > 2 * 1024 * 1024) {
+        reject(new Error('Request body too large (max 2MB)'));
       }
     });
     req.on('end', () => {
@@ -494,7 +503,9 @@ function main() {
   // Load or create auth token
   authToken = loadOrCreateAuthToken();
   console.log(`Auth token file: ${AUTH_TOKEN_FILE}`);
-  console.log(`Auth token: ${authToken}`);
+  // Mask token to prevent exposure in terminal logs
+  const maskedToken = authToken.slice(0, 4) + '...' + authToken.slice(-4);
+  console.log(`Auth token: ${maskedToken} (full token in ${AUTH_TOKEN_FILE})`);
   console.log('');
 
   const db = loadDb();
