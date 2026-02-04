@@ -20,30 +20,26 @@ Your agent remembers what you worked on - across sessions, across projects.
 
 ## Installation: Local Backend (Recommended)
 
-All data stays on your machine. No external API calls.
+All data stays on your machine. No external API calls. **No Docker required.**
 
 ### Prerequisites
 
-- Docker Desktop running
 - Node.js 18+
 
 ### Step 1: Start the Local Backend
 
 ```bash
 cd local-backend
-
-# Start ChromaDB vector database
-docker compose up -d
-
-# Start the API server (keep this terminal open)
 npm start
 ```
 
 You should see:
 ```
-Supermemory Local Backend (Docker + ChromaDB)
-==============================================
-ChromaDB connection: OK
+Supermemory Local Backend
+=========================
+Data directory: ~/.supermemory-local
+Loaded 0 memories
+
 Server running at http://127.0.0.1:19877
 ```
 
@@ -80,9 +76,10 @@ Before starting Claude Code, ensure the backend is running:
 
 ```bash
 cd /path/to/claude-supermemory/local-backend
-docker compose up -d   # Start ChromaDB if not running
-npm start              # Start API server
+npm start
 ```
+
+(Or add it to your shell startup script to run automatically.)
 
 ---
 
